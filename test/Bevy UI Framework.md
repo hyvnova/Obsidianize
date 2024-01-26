@@ -1,3 +1,0 @@
-Bevy UI Framework
-
-### References

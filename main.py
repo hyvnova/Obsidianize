@@ -1,17 +1,15 @@
 from typing import Set
 import requests, re, bs4, os, shutil
-from html2text import html2text as to_markdown
 from urllib import parse
 from concurrent.futures import ThreadPoolExecutor
 from threading import Thread
-
+from markdownify import markdownify
 """
 Obsidianize - turn a given url into a obsidian notebook.
 - Each link in webpage will be condired a note
 - Each note will be saved as a markdown file
 """
 
-type LinkRef = tuple[str, str]  # (title, url)
 INF = float("inf")
 
 def required_input(prompt: str) -> str:  # type: ignore
@@ -53,7 +51,7 @@ print("Domain: ", domain)
 
 LINK_SEARCH_DEPTH_LIMIT = INF 
 # total number of links to be processed
-LINK_LISTING_LIMIT = INF
+LINK_PROCESSING_LIMIT = 1
 
 found_links = set()
 processed_link_count = 0
@@ -111,8 +109,13 @@ def get_title_from_url(url: str) -> str:
     url_title_map[url] = title
     return title
 
+def tag_to_html(tag: bs4.Tag) -> str:
+    """
+    Convert the given tag to html 
+    """
+    return "".join([str(c) for c in tag.contents])
 
-def create_note(title: str, content: str, references: Set[str] = set()):
+def create_note(title: str, body: bs4.Tag, references: Set[str] = set()):
     """
     Create a markdown file with the given title and content
     """
@@ -120,6 +123,10 @@ def create_note(title: str, content: str, references: Set[str] = set()):
     if os.path.exists(f"{notebook_name}/{title}.md"):
         print("Note already created. Skipping...")
         return
+
+    # convert tag into html text
+    content =  tag_to_html(body) # convert tag to html text
+    content = markdownify(content) # convert html to markdown
 
     with open(f"{notebook_name}/{title}.md", "w", encoding='utf-8') as file:
         file.write(content)
@@ -134,7 +141,7 @@ def process_link(link: str, depth: list[int]):
     global processed_link_count
 
     processed_link_count += 1
-    if processed_link_count > LINK_LISTING_LIMIT:
+    if processed_link_count > LINK_PROCESSING_LIMIT:
         print(f"Reached the link listing limit. Not processing any more links.")
         return
 
@@ -177,7 +184,6 @@ def get_pages_and_create_note(url=url, depth=[0]):
         print("No content found. Skipping...")
         return
 
-    content = content.text.strip()
 
     # Get all the links in body with name
     # filter out the external links
@@ -199,7 +205,7 @@ def get_pages_and_create_note(url=url, depth=[0]):
         print(f"Reached the depth limit. Skipping... {len(links)} links; at {title}")
         return
 
-    if processed_link_count > LINK_LISTING_LIMIT:
+    if processed_link_count > LINK_PROCESSING_LIMIT:
         print(
             f"Reached the link listing limit. Skipping... {len(links)} links; at {title}"
         )

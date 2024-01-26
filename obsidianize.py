@@ -6,15 +6,6 @@ from threading import Thread
 from markdownify import markdownify
 from urllib import parse
 
-"""
-Obsidianize - turn a given url into a obsidian notebook.
-- Each link in webpage will be condired a note
-- Each note will be saved as a markdown file
-"""
-
-INF = float("inf")
-
-
 INF = float("inf")
 
 
@@ -35,7 +26,7 @@ class Obsidianize:
     - `url`: The url to obsidianize.
     - `link_search_depth_limit`: The depth limit for searching links. Default: `INF`. Link depth is the number of links away from root url.
     - `link_processing_limit`: The limit for processing links. Default: `INF`. Each link is roughly a note.
-    - `selectors`: The selectors to use for finding the title, content and links. Default: 
+    - `selectors`: The selectors to use for finding the title, content and links. Default:
 
     ```python
     Obsidianize.Selectors(
@@ -95,6 +86,7 @@ class Obsidianize:
 
         self.print("Notebook name: ", notebook_name)
         self.print("URL: ", url)
+        self.print("Domain: ", self.domain)
 
         # Start the process
         self.get_pages_and_create_note(self.url)
@@ -141,11 +133,15 @@ class Obsidianize:
 
         for selector in self.selectors.link:
             for link in soup.select(selector):
-                href = link.get("href")
-                if not href or not href.startswith("/") or (href in links):  # type: ignore
+                href: str = link.get("href")  # type: ignore
+                if not href:
                     continue
 
-                links.add(href)
+                parsed_href = parse.urlparse(href)
+                if href and (href.startswith(self.domain) or href.startswith("/") or not parsed_href.netloc):  # type: ignore
+                    if href[0] != "/":
+                        href = "/" + href
+                    links.add(href)
 
         return links
 
@@ -155,22 +151,23 @@ class Obsidianize:
         """
         return re.sub(r"[^\w\s]", "", t)
 
-    def get_title_from_url(self, url: str) -> str:
+    def get_title_from_url(self, internal_link: str) -> str:
         """
-        Get the title from the url (internal link. starts with /)
+        Get the title from the url (internal link)
         """
 
-        if url in self.url_title_map:
-            return self.url_title_map[url]
+        if internal_link in self.url_title_map:
+            return self.url_title_map[internal_link]
 
-        res = requests.get(f"{self.domain}{url}")
         try:
+            res = requests.get(f"{self.domain}{internal_link}", timeout=1)
             res.raise_for_status()  # Check for errors
+
         except Exception as e:
             self.print(f"Error getting title from url: {e}")
-            return ""
+            return internal_link
 
-        self.print("Getting title from url: ", f"{self.domain}{url}")
+        self.print("Getting title from url: ", f"{self.domain}{internal_link}")
 
         soup = bs4.BeautifulSoup(res.text, "html.parser")
 
@@ -178,10 +175,10 @@ class Obsidianize:
         title = self.find_element(soup, self.selectors.title)
         if not title:
             self.print("No title found.")
-            return ""
+            return internal_link
 
         title = self.normalize_title(title.text.strip())
-        self.url_title_map[url] = title
+        self.url_title_map[internal_link] = title
         return title
 
     def tag_to_html(self, tag: bs4.Tag) -> str:
@@ -214,12 +211,9 @@ class Obsidianize:
                 file.write(f"[[{self.get_title_from_url(ref)}]] ")
 
     def process_link(self, link: str, depth: list[int]):
-        self.processed_link_count += 1
         if self.processed_link_count > self.link_processing_limit:
-            self.print(
-                f"Reached the link listing limit. Not processing any more links."
-            )
             return
+        self.processed_link_count += 1
 
         # create note for the link
         url = self.domain + link

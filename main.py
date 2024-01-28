@@ -19,15 +19,15 @@ def required_input(prompt: str) -> str:  # type: ignore
 
 # notebook_name = required_input("Enter the notebook name: ")
 # url = required_input("Enter the url: ")
-# domain = f"{parse.urlparse(url).scheme}://{parse.urlparse(url).netloc}"
 
 notebook_name = "test"
 url = "https://bevy-cheatbook.github.io/introduction.html"
 
 Obsidianize(
-    notebook_name=notebook_name,
-    url=url,
-    link_processing_limit=10,
-    silent=False,
-    selectors=Obsidianize.Selectors()
+    notebook_name,
+    url,
+    link_processing_limit=100,
+    cache=Obsidianize.CacheOptions(
+        load=False
+    )
 )

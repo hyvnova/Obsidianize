@@ -1,12 +1,13 @@
 import requests, re, bs4, os, shutil
 from dataclasses import dataclass, field
-from typing import Set
+from typing import Dict, Set
 from concurrent.futures import ThreadPoolExecutor
 from threading import Thread
 from markdownify import markdownify
 from urllib import parse
 
 INF = float("inf")
+Url = str
 
 
 class Obsidianize:
@@ -36,11 +37,13 @@ class Obsidianize:
     )
     ```
     - `silent`: If `True`, no output will be printed. Default: `False`.
+    - `cache`: Cache options. Default: `Obsidianize.CacheOptions()` - Enabled, save and load cache from the current directory. 
     """
 
     @dataclass
     class Selectors:
-        title: Set[str] = field(default_factory=lambda: {"title", "main h1", "h1"})
+        title: Set[str] = field(default_factory=lambda: {"main h1", "h1", "title"})
+
         content: Set[str] = field(
             default_factory=lambda: {
                 "main",
@@ -53,6 +56,16 @@ class Obsidianize:
             }
         )
 
+    @dataclass
+    class CacheOptions:
+        save: bool = True # Save the cache
+        load: bool = True # Load saved cache (if exists)
+        path: str = "./" # Directory to save the cache in
+
+
+    def get_cache_file_path(self, notebook_name: str) -> str:
+        return f"{notebook_name}.obsidianize.cache" 
+
     def __init__(
         self,
         notebook_name: str,
@@ -61,16 +74,19 @@ class Obsidianize:
         link_processing_limit: int | float = INF,
         selectors: Selectors = Selectors(),
         silent: bool = False,
+        cache: CacheOptions = CacheOptions(), 
     ):
         self.notebook_name = notebook_name
         self.url = url
         self.link_search_depth_limit = link_search_depth_limit
         self.link_processing_limit = link_processing_limit
         self.selectors = selectors
+        self.cache: Obsidianize.CacheOptions = cache
+        self.depth: int = 0
 
         self.found_links: Set[str] = set()
         self.processed_link_count = 0
-        self.url_title_map = {}
+        self.url_title_map: Dict[Url, str] = {} # Map from url to title
 
         self.domain = parse.urlparse(url).scheme + "://" + parse.urlparse(url).netloc
 
@@ -88,8 +104,42 @@ class Obsidianize:
         self.print("URL: ", url)
         self.print("Domain: ", self.domain)
 
+        # Load the cache
+        if self.cache.save:
+            self.load_cache()
+
         # Start the process
-        self.get_pages_and_create_note(self.url)
+        self.get_page(self.url)
+
+    # Save cache on destruction
+    def __del__(self):
+        if not self.cache.save:
+            return
+        
+        # Make sure the cache directory exists
+        if not os.path.exists(self.cache.path):
+            os.mkdir(self.cache.path)
+
+        with open(self.get_cache_file_path(self.notebook_name), "w", encoding="utf-8") as file:
+            for url, title in self.url_title_map.items():
+                file.write(f"{url},{title}\n")
+
+
+    def load_cache(self):
+        """
+        Load the cache from the cache file
+        """
+
+        cache_path = self.get_cache_file_path(self.notebook_name)
+
+        if not os.path.exists(cache_path):
+            return
+
+        with open(cache_path, "r", encoding="utf-8") as file:
+            for line in filter(str.isspace, file.readlines()):
+                url, title = line.split(",")
+                self.url_title_map[url] = title
+
 
     def clear_directory(self, directory_path: str):
         if not os.path.exists(directory_path):
@@ -128,20 +178,22 @@ class Obsidianize:
     def find_links(self, soup: bs4.BeautifulSoup) -> Set[str]:
         """
         Find all the (internal) links in the soup
+        @param soup: The soup to find links in
+        @return: A set of links - links with domain:
         """
         links = set()
 
         for selector in self.selectors.link:
-            for link in soup.select(selector):
-                href: str = link.get("href")  # type: ignore
+            for link_element in soup.select(selector):
+                href: str | None = link_element.get("href")  # type: ignore
                 if not href:
                     continue
 
-                parsed_href = parse.urlparse(href)
-                if href and (href.startswith(self.domain) or href.startswith("/") or not parsed_href.netloc):  # type: ignore
-                    if href[0] != "/":
-                        href = "/" + href
-                    links.add(href)
+                url = parse.urlparse(href)
+
+                # if the link is internal
+                if href.startswith("/") or url.netloc == self.domain:
+                    links.add(self.domain + href)
 
         return links
 
@@ -151,34 +203,33 @@ class Obsidianize:
         """
         return re.sub(r"[^\w\s]", "", t)
 
-    def get_title_from_url(self, internal_link: str) -> str:
+    def get_title_from_url(self, link: str) -> str:
         """
-        Get the title from the url (internal link)
+        Get the title from the url 
         """
 
-        if internal_link in self.url_title_map:
-            return self.url_title_map[internal_link]
+        # If the title is already cached, return it    
+        if link in self.url_title_map:
+            return self.url_title_map[link]
 
         try:
-            res = requests.get(f"{self.domain}{internal_link}", timeout=1)
+            res = requests.get(link)
             res.raise_for_status()  # Check for errors
 
         except Exception as e:
             self.print(f"Error getting title from url: {e}")
-            return internal_link
-
-        self.print("Getting title from url: ", f"{self.domain}{internal_link}")
+            return link
 
         soup = bs4.BeautifulSoup(res.text, "html.parser")
 
         # Get the title of the page
         title = self.find_element(soup, self.selectors.title)
         if not title:
-            self.print("No title found.")
-            return internal_link
+            self.print("No title found. for url: ", link)
+            return link
 
         title = self.normalize_title(title.text.strip())
-        self.url_title_map[internal_link] = title
+        self.url_title_map[link] = title
         return title
 
     def tag_to_html(self, tag: bs4.Tag) -> str:
@@ -190,10 +241,12 @@ class Obsidianize:
     def create_note(self, title: str, body: bs4.Tag, references: Set[str] = set()):
         """
         Create a markdown file with the given title and content
+        @param title: The title of the note
+        @param body: The body of the note - a tag containing the content
+        @param references: A set of references (Links) to add to the note
         """
 
         if os.path.exists(f"{self.notebook_name}/{title}.md"):
-            self.print("Note already created. Skipping...")
             return
 
         # convert tag into html text
@@ -201,32 +254,32 @@ class Obsidianize:
 
         # convert html to markdown
         content = markdownify(content)
+        ref_string = " ".join(set([f"[[{self.get_title_from_url(ref)}]]" for ref in references]))
 
         with open(f"{self.notebook_name}/{title}.md", "w", encoding="utf-8") as file:
+            
             file.write(content)
-
             file.write("\n\n")
             file.write("### References\n")
-            for ref in references:
-                file.write(f"[[{self.get_title_from_url(ref)}]] ")
+            file.write(ref_string)
 
-    def process_link(self, link: str, depth: list[int]):
+    def process_link(self, link: str):
         if self.processed_link_count > self.link_processing_limit:
             return
         self.processed_link_count += 1
 
-        # create note for the link
-        url = self.domain + link
-        self.print("Processing link: ", url)
-        depth[0] += 1
-        self.get_pages_and_create_note(url=url, depth=depth)
+        if self.depth > self.link_search_depth_limit:
+            return
+        self.depth += 1
 
-    def get_pages_and_create_note(self, url: str, depth=[0]):
+        # create note for the link
+        self.get_page(url=link)
+
+    def get_page(self, url: str):
         """
         Get the page from the given url and create it's note, then continue to repeat the process with links found at the page.
         """
         if url in self.found_links:
-            self.print("Note already created. Skipping...")
             return
 
         res = requests.get(url)
@@ -249,19 +302,23 @@ class Obsidianize:
             self.print("No content found. Skipping...")
             return
 
-        self.print(f"Creating note for {title}...")
+        self.print(f"Creating note for: {title}")
 
-        # Get all the links in body with name
-        # filter out the external links
+        # Get all the internal links in the page
         links = self.find_links(soup)
-
-        self.print(f"Found {len(links)} links in {title}...")
+        self.print(f"Found {len(links)} links in: {title}")
 
         # Create the note
         Thread(target=self.create_note, args=(title, content, links)).start()
         self.found_links.add(url)
 
-        if depth[0] > self.link_search_depth_limit:
+        # Filter out the links that have already been processed
+        links = links.difference(self.found_links)
+
+        if len(links) == 0:
+            return
+
+        if self.depth > self.link_search_depth_limit:
             self.print(
                 f"Reached the depth limit. Skipping... {len(links)} links; at {title}"
             )
@@ -275,4 +332,4 @@ class Obsidianize:
 
         # Process the links
         with ThreadPoolExecutor() as executor:
-            executor.map(self.process_link, links, [depth] * len(links))
+            executor.map(self.process_link, links)

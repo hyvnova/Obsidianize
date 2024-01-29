@@ -26,7 +26,6 @@ url = "https://bevy-cheatbook.github.io/introduction.html"
 Obsidianize(
     notebook_name,
     url,
-    link_processing_limit=100,
     cache=Obsidianize.CacheOptions(
         load=False
     )

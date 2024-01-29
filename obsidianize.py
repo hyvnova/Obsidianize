@@ -9,7 +9,6 @@ from urllib import parse
 INF = float("inf")
 Url = str
 
-
 class Obsidianize:
     """
     Obsidianize - turn a given url into a obsidian notebook.
@@ -254,7 +253,15 @@ class Obsidianize:
 
         # convert html to markdown
         content = markdownify(content)
-        ref_string = " ".join(set([f"[[{self.get_title_from_url(ref)}]]" for ref in references]))
+        titles = [self.get_title_from_url(ref) for ref in references]
+        ref_string = " ".join([f"[[{title}]]" for title in titles])
+
+        # make links on content point to notes
+        for (ref, title) in zip(references, titles):
+            # remove domain from the link
+            ref = ref.replace(self.domain, "")
+            print(ref, title)
+            content = content.replace(ref, f"[[{title}.md]]")
 
         with open(f"{self.notebook_name}/{title}.md", "w", encoding="utf-8") as file:
             

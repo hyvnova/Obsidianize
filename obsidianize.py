@@ -73,7 +73,7 @@ class Obsidianize:
         link_processing_limit: int | float = INF,
         selectors: Selectors = Selectors(),
         silent: bool = False,
-        cache: CacheOptions = CacheOptions(), 
+        cache: CacheOptions = CacheOptions() 
     ):
         self.notebook_name = notebook_name
         self.url = url
@@ -178,7 +178,7 @@ class Obsidianize:
         """
         Find all the (internal) links in the soup
         @param soup: The soup to find links in
-        @return: A set of links - links with domain:
+        @return: A set of relative links (don't include the domain)
         """
         links = set()
 
@@ -192,7 +192,7 @@ class Obsidianize:
 
                 # if the link is internal
                 if href.startswith("/") or url.netloc == self.domain:
-                    links.add(self.domain + href)
+                    links.add(href)
 
         return links
 
@@ -212,7 +212,7 @@ class Obsidianize:
             return self.url_title_map[link]
 
         try:
-            res = requests.get(link)
+            res = requests.get(self.domain + link)
             res.raise_for_status()  # Check for errors
 
         except Exception as e:
@@ -242,7 +242,7 @@ class Obsidianize:
         Create a markdown file with the given title and content
         @param title: The title of the note
         @param body: The body of the note - a tag containing the content
-        @param references: A set of references (Links) to add to the note
+        @param references: A set of references (Internal Links) to add to the note
         """
 
         if os.path.exists(f"{self.notebook_name}/{title}.md"):
@@ -253,22 +253,16 @@ class Obsidianize:
 
         # convert html to markdown
         content = markdownify(content)
-        titles = [self.get_title_from_url(ref) for ref in references]
-        ref_string = " ".join([f"[[{title}]]" for title in titles])
+        ref_titles = [self.get_title_from_url(ref) for ref in references]
 
         # make links on content point to notes
-        for (ref, title) in zip(references, titles):
+        for (ref, title) in zip(references, ref_titles):
             # remove domain from the link
             ref = ref.replace(self.domain, "")
-            print(ref, title)
             content = content.replace(ref, f"[[{title}.md]]")
 
         with open(f"{self.notebook_name}/{title}.md", "w", encoding="utf-8") as file:
-            
             file.write(content)
-            file.write("\n\n")
-            file.write("### References\n")
-            file.write(ref_string)
 
     def process_link(self, link: str):
         if self.processed_link_count > self.link_processing_limit:
@@ -338,5 +332,6 @@ class Obsidianize:
             return
 
         # Process the links
+        links = list(map(lambda link: self.domain + link, links)) # Add the domain to the links
         with ThreadPoolExecutor() as executor:
             executor.map(self.process_link, links)
